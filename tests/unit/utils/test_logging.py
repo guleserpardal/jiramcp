@@ -40,7 +40,6 @@ def test_setup_logging_removes_existing_handlers():
     root_logger = logging.getLogger()
     test_handler = logging.StreamHandler()
     root_logger.addHandler(test_handler)
-    initial_handler_count = len(root_logger.handlers)
 
     # Setup logging should remove existing handler
     setup_logging()
@@ -62,3 +61,21 @@ def test_setup_logging_logging_stream():
     logger = setup_logging(logging.DEBUG, stream)
     logger.debug("test")
     assert stream.getvalue() == f"DEBUG - {logger.name} - test\n"
+
+
+def test_oauth_access_filter_removes_query_credentials():
+    from mcp_atlassian.utils.logging import OAuthAccessLogFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1", "GET", "/callback?code=SECRET&state=STATE", "1.1", 302),
+        None,
+    )
+    assert OAuthAccessLogFilter().filter(record)
+    assert "/callback HTTP" in record.getMessage()
+    assert "SECRET" not in record.getMessage()
+    assert "STATE" not in record.getMessage()

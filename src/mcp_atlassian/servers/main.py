@@ -854,11 +854,10 @@ def _build_auth_provider() -> HardenedOAuthProxy | None:
     scope_env = os.getenv("ATLASSIAN_OAUTH_SCOPE", "")
 
     if not all([instance_url, client_id, client_secret, redirect_uri]):
-        logger.warning(
-            "OAuth proxy requested but required vars are missing. "
-            "Need instance URL + client credentials + redirect URI."
+        raise ValueError(
+            "OAuth proxy enabled but required configuration is missing: "
+            "instance URL + client credentials + redirect URI are required."
         )
-        return None
 
     scopes = [s for part in scope_env.replace(",", " ").split() if (s := part)]
     is_cloud = _is_cloud_instance(instance_url)
