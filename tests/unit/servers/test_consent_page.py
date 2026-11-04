@@ -32,7 +32,8 @@ def test_form_contract_kept(monkeypatch: pytest.MonkeyPatch) -> None:
     assert 'name="action" value="approve"' in page
     assert 'name="action" value="deny"' in page
     assert "Content-Security-Policy" in page
-    assert "QNB ITool, Jira hesabına erişmek istiyor" in page
+    assert "Jira hesabınızı bağlayın" in page
+    assert "QNB ITool" in page
 
 
 def test_escapes_client_supplied_text() -> None:
@@ -44,9 +45,9 @@ def test_escapes_client_supplied_text() -> None:
 
 def test_read_only_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("READ_ONLY_MODE", "true")
-    assert "yalnız okuma" in _render()
+    assert "Yalnız okuma" in _render()
     monkeypatch.setenv("READ_ONLY_MODE", "false")
-    assert "okuma ve yazma" in _render()
+    assert "Okuma ve yazma" in _render()
 
 
 def test_logo_embedded_as_data_uri(
@@ -85,3 +86,13 @@ def test_install_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_CONSENT_PAGE", "fastmcp")
     assert cp.install_consent_page() is False
     assert consent_module.create_consent_html is original
+
+
+def test_consent_has_no_unconditional_storage_or_revocation_promises() -> None:
+    page = _render()
+    assert "yalnız şirket içindeki" not in page
+    assert "şifreli tutulur" not in page
+    assert "form-action" in page
+    assert 'name="referrer" content="no-referrer"' in page
+    assert "focus-visible" in page
+    assert "@media(max-width:640px)" in page

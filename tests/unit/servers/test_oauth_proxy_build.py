@@ -310,3 +310,22 @@ async def test_register_client_hardens_grant_types_and_scopes(monkeypatch):
     assert stored is not None
     assert stored.grant_types == ["authorization_code"]
     assert stored.scope == "read:jira-work"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "ATLASSIAN_OAUTH_CLIENT_ID",
+        "ATLASSIAN_OAUTH_CLIENT_SECRET",
+        "ATLASSIAN_OAUTH_REDIRECT_URI",
+    ],
+)
+def test_enabled_proxy_with_missing_settings_fails_closed(monkeypatch, missing):
+    _set_required_oauth_env(monkeypatch, redirect_uri="http://localhost:9000/callback")
+    monkeypatch.setenv("JIRA_URL", "https://jira.example.com")
+    for prefix in ("JIRA", "CONFLUENCE"):
+        monkeypatch.delenv(f"{prefix}_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv(f"{prefix}_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv(missing)
+    with pytest.raises(ValueError, match="required configuration is missing"):
+        _build_auth_provider()

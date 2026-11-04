@@ -97,3 +97,37 @@ uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements.txt
 
 MIT lisanslı açık kaynak bir projeden türetilmiştir; lisans ve telif bildirimleri
 [LICENSE](LICENSE) dosyasındadır.
+
+
+## Bağlantıyı kaldırma ve dağıtım
+
+OAuth metadata `/revoke` adresini sunar. İstemci, kendi MCP erişim veya yenileme
+tokenını bu adrese göndererek yalnız o bağlantının iznini kaldırabilir. Aynı
+bağlantıya ait erişim ve yenileme tokenları engellenir; başka istemcilerin
+bağlantıları korunur. Devam eden yenilemelerin bağlantıyı geri getirmemesi için
+iptal bilgisi ortak OAuth deposunda tutulur. Bu işlem Jira hesabındaki genel
+Application Link iznini kaldırmaz; o izin Jira profilinden yönetilir.
+
+`ATLASSIAN_OAUTH_PROXY_ENABLE=true` iken zorunlu OAuth ayarları eksikse sunucu
+başlamaz; sessizce yetkilendirmesiz çalışma kipine düşmez.
+
+Varsayılan FastMCP deposu şifrelidir. Özel `client_storage` fabrikası kullanılırsa
+şifreleme, erişim kontrolü ve yedekleme fabrika sahibinin sorumluluğundadır. Çok
+kopyalı kurulumda OAuth deposu ve şifreleme/imzalama anahtarı tüm kopyalar için
+uyumlu ve ortak yönetilmelidir. İptal işaretleri de aynı depoda korunmalıdır.
+
+Güncellemede önce bu sunucuyu, sonra ITool istemcisini yeniden başlatın. ITool'un
+kişisel MCP bağlantısı mevcut diğer Jira ekranlarını kendiliğinden taşımaz.
+
+
+## OAuth adım logları
+
+`MCP_OAUTH_TRACE=true` ile yeniden başlatın. `-vv` gerekmez. İzin ekranı,
+Jira'ya yönlendirme, Jira token HTTP isteği/yanıtı, SDK PKCE doğrulaması, ayrı
+MCP tokenı üretimi, yenileme ve iptal adımları konsolda görünür. ITool'da
+`JIRA_MCP_TRACE=true` ayarıyla aynı akışı istemci tarafında izleyin. Ortak
+`flowId` yalnız log etiketidir; doğrulama veya kullanıcı kimliği değildir.
+Kod/token/state/verifier değerleri, HTTP gövdeleri ve URL query değerleri
+trace'e yazılmaz. `MCP_PKCE_VERIFIED`, framework kontrolü geçtikten sonra yazılır;
+Jira'nın iç PKCE hesabı sunucuda gözlemlenemez, başarılı HTTP dönüşü görülür.
+Özel OAuth deposu kullanıldığında şifreleme fabrika sahibinin sorumluluğundadır.

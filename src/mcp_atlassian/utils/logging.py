@@ -10,6 +10,19 @@ import sys
 from typing import TextIO
 
 
+class OAuthAccessLogFilter(logging.Filter):
+    """Remove OAuth query credentials from Uvicorn's access record before formatting."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Uvicorn records (client, method, full_path, version, status)."""
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            args = list(record.args)
+            if isinstance(args[2], str):
+                args[2] = args[2].split("?", 1)[0]
+            record.args = tuple(args)
+        return True
+
+
 def setup_logging(
     level: int = logging.WARNING, stream: TextIO = sys.stderr
 ) -> logging.Logger:
@@ -23,6 +36,10 @@ def setup_logging(
     Returns:
         The configured logger instance
     """
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, OAuthAccessLogFilter) for f in access_logger.filters):
+        access_logger.addFilter(OAuthAccessLogFilter())
+
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
@@ -103,7 +120,7 @@ def log_config_param(
     service: str,
     param: str,
     value: str | None,
-    sensitive: bool = False,
+    sensitive: bool = False,  # noqa: FBT001, FBT002 - existing positional API
 ) -> None:
     """Logs a configuration parameter, masking if sensitive.
 

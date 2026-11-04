@@ -29,6 +29,7 @@ class OAuthProxyTestbed:
 
     harness: OAuthDCRClientHarness
     issuer: FakeUpstreamIssuer
+    provider: HardenedOAuthProxy
 
 
 def _build_proxy(
@@ -76,7 +77,8 @@ async def oauth_proxy_testbed(
     monkeypatch.setenv("SSL_CERT_FILE", str(upstream_server.ca_certificate_path))
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     await upstream_server.start()
-    proxy_app = _build_proxy_app(upstream_server.base_url, "https://mcp.test")
+    provider = _build_proxy(upstream_server.base_url, "https://mcp.test")
+    proxy_app = Starlette(routes=provider.get_routes("/mcp"))
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=proxy_app), base_url="https://mcp.test"
@@ -84,6 +86,7 @@ async def oauth_proxy_testbed(
         yield OAuthProxyTestbed(
             harness=OAuthDCRClientHarness(client, upstream_server.ca_certificate_path),
             issuer=issuer,
+            provider=provider,
         )
 
     await upstream_server.stop()
@@ -338,3 +341,132 @@ async def test_oauth_proxy_dcr_happy_path_over_loopback_tls(
 
     assert response.status_code == 200
     assert response.json()["access_token"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("token_hint", ["access_token", "refresh_token"])
+async def test_disconnect_revokes_only_its_grant_and_blocks_refresh_resurrection(
+    oauth_proxy_testbed: OAuthProxyTestbed,
+    token_hint: str,
+) -> None:
+    """Exercise discovery, DCR, PKCE, token swap and HTTP revocation together."""
+    bed = oauth_proxy_testbed
+    harness = bed.harness
+    _, metadata = await harness.discover()
+    assert metadata["revocation_endpoint"].endswith("/revoke")
+    first = await harness.register("http://127.0.0.1:4242/callback")
+    code, verifier = await harness.authorize_with_pkce(first)
+    response = await harness.exchange_code(first, code, verifier)
+    assert response.status_code == 200
+    pair = response.json()
+    second = await harness.register("http://127.0.0.1:4243/callback")
+    code, verifier = await harness.authorize_with_pkce(second)
+    other = (await harness.exchange_code(second, code, verifier)).json()
+
+    access = await bed.provider.load_access_token(pair["access_token"])
+    assert access is not None
+    assert access.client_id == first.client_id
+    assert access.token != pair["access_token"]  # Jira and MCP credentials differ.
+    jti = bed.provider.jwt_issuer.verify_token(pair["access_token"])["jti"]
+    mapping = await bed.provider._jti_mapping_store.get(key=jti)
+    assert mapping is not None
+    saved_upstream = await bed.provider._upstream_token_store.get(
+        key=mapping.upstream_token_id
+    )
+    assert saved_upstream is not None
+
+    # Another client cannot revoke this connection, even with the token value.
+    data = {
+        "client_id": second.client_id,
+        "client_secret": "",
+        "token": pair[token_hint],
+        "token_type_hint": token_hint,
+    }
+    assert (await harness._client.post("/revoke", data=data)).status_code == 200
+    assert await bed.provider.load_access_token(pair["access_token"]) is not None
+    data["client_id"] = first.client_id
+    assert (await harness._client.post("/revoke", data=data)).status_code == 200
+    assert await bed.provider.load_access_token(pair["access_token"]) is None
+    assert await bed.provider.load_access_token(other["access_token"]) is not None
+
+    # Simulate a refresh that had read its inputs before revocation committed.
+    await bed.provider._upstream_token_store.put(
+        key=mapping.upstream_token_id, value=saved_upstream
+    )
+    await bed.provider._jti_mapping_store.put(key=jti, value=mapping)
+    assert await bed.provider.load_access_token(pair["access_token"]) is None
+    refreshed = await harness._client.post(
+        "/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": first.client_id,
+            "refresh_token": pair["refresh_token"],
+        },
+    )
+    assert refreshed.status_code in {400, 401}, refreshed.text
+    assert refreshed.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.anyio
+async def test_oauth_step_trace_correlates_hops_without_credentials(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    """Run real DCR/PKCE HTTP flow with tracing enabled, inspect only safe events."""
+    import hashlib
+    import logging
+
+    monkeypatch.setenv("MCP_OAUTH_TRACE", "true")
+    issuer = FakeUpstreamIssuer()
+    upstream = LocalTLSOAuthIssuer(tmp_path / "trace-upstream", issuer)
+    monkeypatch.setenv("SSL_CERT_FILE", str(upstream.ca_certificate_path))
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    await upstream.start()
+    provider = _build_proxy(upstream.base_url, "https://mcp.test")
+    app = Starlette(routes=provider.get_routes("/mcp"))
+    flow = hashlib.sha256(b"harness-client-state").hexdigest()[:16]
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://mcp.test",
+            headers={"X-OAuth-Flow-Id": flow},
+        ) as client:
+            harness = OAuthDCRClientHarness(client, upstream.ca_certificate_path)
+            with caplog.at_level(logging.INFO, logger="mcp-atlassian.oauth_trace"):
+                registered = await harness.register("http://127.0.0.1:4242/callback")
+                code, verifier = await harness.authorize_with_pkce(registered)
+                response = await harness.exchange_code(registered, code, verifier)
+                assert response.status_code == 200
+            records = [
+                r.getMessage()
+                for r in caplog.records
+                if r.name == "mcp-atlassian.oauth_trace"
+            ]
+            text = "\n".join(records)
+            for step in (
+                "MCP_HTTP_RECEIVED",
+                "MCP_PKCE_CREATED",
+                "JIRA_CALLBACK",
+                "JIRA_HTTP_SEND",
+                "JIRA_HTTP_RETURN",
+                "MCP_CODE_ISSUED",
+                "ITOOL_REDIRECT",
+                "MCP_PKCE_VERIFIED",
+                "JIRA_TOKEN_STORED",
+                "MCP_TOKEN_ISSUED",
+            ):
+                assert step in text
+            assert flow in text
+            for secret in (
+                code,
+                verifier,
+                "harness-client-state",
+                response.json()["access_token"],
+                response.json()["refresh_token"],
+                "upstream-client-secret",
+                issuer.authorization_code,
+            ):
+                assert secret not in text
+    finally:
+        await upstream.stop()
