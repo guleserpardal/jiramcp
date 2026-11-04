@@ -92,7 +92,8 @@ def test_consent_has_no_unconditional_storage_or_revocation_promises() -> None:
     page = _render()
     assert "yalnız şirket içindeki" not in page
     assert "şifreli tutulur" not in page
-    assert "form-action" in page
+    # form-action olursa Chrome, onay sonrası Jira'ya giden 302'yi engeller.
+    assert "form-action" not in page
     assert 'name="referrer" content="no-referrer"' in page
     assert "focus-visible" in page
     assert "@media(max-width:640px)" in page
