@@ -570,6 +570,14 @@ class UsersMixin(JiraClient):
         """
         # Handle 'me' as a special case — resolve to current user's account ID
         if identifier.lower() == "me":
+            if not self.config.is_cloud:
+                # Server/DC: myself() already returns the full profile. Its id is
+                # the user KEY (e.g. JIRAUSER314092), which /user?username= cannot
+                # find, so a second lookup would fail with "not found".
+                myself_data = self.jira.myself()
+                if not isinstance(myself_data, dict):
+                    raise ValueError("Current user profile could not be read.")
+                return JiraUser.from_api_response(myself_data)
             resolved_id = self.get_current_user_account_id()
             return self.get_user_profile_by_identifier(resolved_id)
 
