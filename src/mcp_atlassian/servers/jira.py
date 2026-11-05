@@ -401,6 +401,29 @@ async def get_user_profile(
 
 @jira_mcp.tool(
     tags={"jira", "read", "toolset:jira_users"},
+    annotations={"title": "Get My Jira Groups", "readOnlyHint": True},
+)
+async def get_my_groups(ctx: Context) -> str:
+    """List Jira groups for the user authenticated on this MCP request.
+
+    Takes no username: identity comes from the request's Jira credentials.
+    Groups may represent access permissions rather than organizational teams.
+    If complete is false, Jira returned fewer memberships than the reported total;
+    do not describe that partial list as all of the user's groups.
+
+    Args:
+        ctx: The FastMCP context for this authenticated request.
+
+    Returns:
+        JSON with success, user, groups, count, total and complete.
+    """
+    jira = await get_jira_fetcher(ctx)
+    result = await run_jira_fetcher_call(jira.get_my_groups)
+    return json.dumps({"success": True, **result}, ensure_ascii=False)
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_users"},
     annotations={"title": "Search Assignable Users", "readOnlyHint": True},
 )
 async def search_assignable_users(

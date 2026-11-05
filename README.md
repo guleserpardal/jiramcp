@@ -50,6 +50,23 @@ kimliksiz `POST http://localhost:9000/mcp` **401** dönmeli.
 Windows komut penceresinde **Hızlı Düzenleme Modu**'nu kapatın (pencere başlığı → Özellikler):
 pencereye tıklamak sunucuyu dondurur.
 
+## Kullanıcının Jira grupları
+
+`jira_get_my_groups` aracı parametre almadan, istekteki Jira kimliğiyle kullanıcının
+grup üyeliklerini getirir. Kullanıcı adı modelden alınmaz; Jira'nın `/myself`
+yanıtından bulunur. Server/DC'de `/user?username=...&expand=groups` çağrılır
+(kullanıcı adı yoksa Jira kullanıcı anahtarı kullanılır).
+
+Araç `user`, `groups`, `count`, `total` ve `complete` alanlarını döndürür.
+`complete=false` ise liste eksiktir; "tüm gruplarım" olarak yorumlanmamalıdır.
+Jira yetki hataları boş listeye çevrilmez. Grup üyeliği tek başına organizasyonel
+ekip üyeliği anlamına gelmez; ekip grupları kurumun tanımına göre eşlenmelidir.
+
+`TOOLSETS` kısıtlanmışsa mevcut listeye `jira_users`, `ENABLED_TOOLS`
+kısıtlanmışsa mevcut listeye `jira_get_my_groups` ekleyin. Sunucuyu yeniden başlatıp
+istemci MCP bağlantısını yenileyin. MCP `tools/list` yanıtında araç görünmelidir;
+`tools/call` adı `jira_get_my_groups`, argümanları `{}` olmalıdır.
+
 ## Onay ekranı
 
 İstemci ilk bağlandığında kişiye Türkçe, kurum adıyla bir onay ekranı gösterilir

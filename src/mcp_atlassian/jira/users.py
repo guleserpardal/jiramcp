@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from requests.exceptions import HTTPError
 from unidecode import unidecode
@@ -41,6 +41,78 @@ def normalize_text(text: str | None) -> str:
 
 class UsersMixin(JiraClient):
     """Mixin for Jira user operations."""
+
+    @handle_auth_errors("Jira API")
+    def get_my_groups(self) -> dict[str, Any]:
+        """Get group memberships for the authenticated Jira user.
+
+        Resolve identity from Jira on every call, using this fetcher's credentials.
+        Server/DC expands the user profile; Cloud uses the user groups endpoint.
+        Groups are memberships, not necessarily organizational teams.
+
+        Returns:
+            User identity, group names/IDs, returned count, total and completeness.
+
+        Raises:
+            ValueError: If Jira returns missing identity or malformed group data.
+            MCPAtlassianAuthenticationError: If authentication or permission fails.
+            HTTPError: If Jira returns another API error.
+        """
+        current_user = self.jira.myself()
+        if not isinstance(current_user, dict):
+            raise ValueError("Jira returned an invalid current-user response.")
+
+        if self.config.is_cloud:
+            account_id = current_user.get("accountId")
+            if not isinstance(account_id, str) or not account_id:
+                raise ValueError("Jira did not return the current user's account ID.")
+            items = self.jira.get(
+                self.jira.resource_url("user/groups"),
+                params={"accountId": account_id},
+            )
+            total = len(items) if isinstance(items, list) else 0
+        else:
+            username = current_user.get("name")
+            user_key = current_user.get("key")
+            params = {"expand": "groups"}
+            if isinstance(username, str) and username:
+                params["username"] = username
+            elif isinstance(user_key, str) and user_key:
+                params["key"] = user_key
+            else:
+                raise ValueError("Jira did not return the current user's name or key.")
+            profile = self.jira.get(self.jira.resource_url("user"), params=params)
+            membership = profile.get("groups") if isinstance(profile, dict) else None
+            if not isinstance(membership, dict):
+                raise ValueError("Jira did not return expanded group memberships.")
+            items = membership.get("items")
+            total = membership.get("size")
+
+        if not isinstance(items, list):
+            raise ValueError("Jira returned an invalid group list.")
+        if type(total) is not int or total < len(items):
+            raise ValueError("Jira returned an invalid group membership count.")
+
+        groups: list[dict[str, str]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("Jira returned an invalid group entry.")
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("Jira returned a group without a name.")
+            group = {"name": name}
+            group_id = item.get("groupId")
+            if isinstance(group_id, str) and group_id:
+                group["id"] = group_id
+            groups.append(group)
+
+        return {
+            "user": JiraUser.from_api_response(current_user).to_simplified_dict(),
+            "groups": groups,
+            "count": len(groups),
+            "total": total,
+            "complete": len(groups) == total,
+        }
 
     def get_current_user_account_id(self) -> str:
         """
