@@ -484,6 +484,7 @@ def test_jira_mcp(mock_jira_fetcher, mock_base_jira_config):
         get_issue_sla,
         get_issues_development_info,
         get_link_types,
+        get_my_groups,
         get_proforma_form_details,
         get_project_components,
         get_project_epic_hierarchy,
@@ -552,6 +553,7 @@ def test_jira_mcp(mock_jira_fetcher, mock_base_jira_config):
     jira_sub_mcp.add_tool(get_sprint_issues)
     jira_sub_mcp.add_tool(get_link_types)
     jira_sub_mcp.add_tool(get_user_profile)
+    jira_sub_mcp.add_tool(get_my_groups)
     jira_sub_mcp.add_tool(search_assignable_users)
     jira_sub_mcp.add_tool(create_issue)
     jira_sub_mcp.add_tool(create_customer_request)
@@ -1199,6 +1201,70 @@ async def test_batch_create_issues_invalid_json(jira_client):
         )
     assert "Error calling tool 'batch_create_issues'" in str(excinfo.value)
     assert "Invalid JSON" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+async def test_get_my_groups_tool(jira_client, mock_jira_fetcher):
+    """Read-only tools expose memberships without accepting a username."""
+    mock_jira_fetcher.get_my_groups.return_value = {
+        "user": {"name": "caller"},
+        "groups": [{"name": "team-a"}],
+        "count": 1,
+        "total": 1,
+        "complete": True,
+    }
+
+    response = await jira_client.call_tool("jira_get_my_groups", {})
+
+    result = json.loads(response.content[0].text)
+    assert result == {"success": True, **mock_jira_fetcher.get_my_groups.return_value}
+    mock_jira_fetcher.get_my_groups.assert_called_once_with()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("enabled_tools", "enabled_toolsets", "visible"),
+    [
+        (["jira_get_my_groups"], {"jira_users"}, True),
+        (["jira_search"], {"jira_users"}, False),
+        (["jira_get_my_groups"], {"jira_issues"}, False),
+    ],
+)
+async def test_get_my_groups_listing(
+    mock_base_jira_config, enabled_tools, enabled_toolsets, visible
+):
+    """Expose the parameterless read tool only when both filters allow it."""
+    from src.mcp_atlassian.servers.jira import jira_mcp
+
+    @asynccontextmanager
+    async def lifespan(app: FastMCP) -> AsyncGenerator[dict[str, Any], None]:
+        yield {
+            "app_lifespan_context": MainAppContext(
+                full_jira_config=mock_base_jira_config,
+                read_only=True,
+                enabled_tools=enabled_tools,
+                enabled_toolsets=enabled_toolsets,
+            )
+        }
+
+    server = AtlassianMCP("GroupListingTest", lifespan=lifespan)
+    server.mount(jira_mcp, namespace="jira")
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+        assert ("jira_get_my_groups" in tools) is visible
+        if visible:
+            tool = tools["jira_get_my_groups"]
+            assert tool.inputSchema.get("properties", {}) == {}
+            assert tool.annotations.readOnlyHint is True
+
+
+@pytest.mark.anyio
+async def test_get_my_groups_permission_error(jira_client, mock_jira_fetcher):
+    """Denied membership reads propagate as MCP errors, not success responses."""
+    mock_jira_fetcher.get_my_groups.side_effect = PermissionError("Permission denied")
+
+    with pytest.raises(ToolError, match="Permission denied"):
+        await jira_client.call_tool("jira_get_my_groups", {})
 
 
 @pytest.mark.anyio

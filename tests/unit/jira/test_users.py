@@ -21,6 +21,147 @@ class TestUsersMixin:
         mixin.jira = jira_client.jira
         return mixin
 
+    @pytest.mark.parametrize("identity_field", ["name", "key"])
+    def test_get_my_groups_dc(self, users_mixin, identity_field):
+        """Resolve the caller from Jira, never from configured service credentials."""
+        users_mixin.config.url = "https://jira.example.com"
+        users_mixin.config.username = "service-account"
+        users_mixin.jira.myself.return_value = {
+            identity_field: "caller@example.com",
+            "displayName": "Caller",
+        }
+        users_mixin.jira.resource_url.return_value = "rest/api/2/user"
+        users_mixin.jira.get.return_value = {
+            "groups": {"size": 2, "items": [{"name": "team-a"}, {"name": "users"}]}
+        }
+
+        result = users_mixin.get_my_groups()
+
+        parameter = "username" if identity_field == "name" else "key"
+        users_mixin.jira.get.assert_called_once_with(
+            "rest/api/2/user",
+            params={parameter: "caller@example.com", "expand": "groups"},
+        )
+        assert result["groups"] == [{"name": "team-a"}, {"name": "users"}]
+        assert result["user"]["display_name"] == "Caller"
+        assert result["count"] == result["total"] == 2
+        assert result["complete"] is True
+
+    def test_get_my_groups_cloud(self, users_mixin):
+        """Cloud groups use the authenticated accountId and retain group IDs."""
+        users_mixin.jira.myself.return_value = {"accountId": "current-account"}
+        users_mixin.jira.resource_url.return_value = "rest/api/2/user/groups"
+        users_mixin.jira.get.return_value = [{"name": "team-a", "groupId": "g-1"}]
+
+        result = users_mixin.get_my_groups()
+
+        users_mixin.jira.get.assert_called_once_with(
+            "rest/api/2/user/groups", params={"accountId": "current-account"}
+        )
+        assert result["groups"] == [{"name": "team-a", "id": "g-1"}]
+        assert result["complete"] is True
+
+    def test_get_my_groups_does_not_cache_identity(self, users_mixin):
+        """Repeated calls use Jira's current identity, ignoring any cached ID."""
+        users_mixin._current_user_account_id = "stale-account"
+        users_mixin.jira.myself.side_effect = [
+            {"accountId": "first-account"},
+            {"accountId": "second-account"},
+        ]
+        users_mixin.jira.get.return_value = []
+
+        first = users_mixin.get_my_groups()
+        second = users_mixin.get_my_groups()
+
+        assert first["user"]["account_id"] == "first-account"
+        assert second["user"]["account_id"] == "second-account"
+        assert users_mixin.jira.get.call_args_list[0].kwargs["params"] == {
+            "accountId": "first-account"
+        }
+        assert users_mixin.jira.get.call_args_list[1].kwargs["params"] == {
+            "accountId": "second-account"
+        }
+
+    @pytest.mark.parametrize("items", [[], [{"name": "team-a"}]])
+    def test_get_my_groups_partial_is_explicit(self, users_mixin, items):
+        """An unexpanded or truncated list must not look like complete membership."""
+        users_mixin.config.url = "https://jira.example.com"
+        users_mixin.jira.myself.return_value = {"name": "caller"}
+        users_mixin.jira.get.return_value = {"groups": {"size": 65, "items": items}}
+
+        result = users_mixin.get_my_groups()
+
+        assert result["total"] == 65
+        assert result["count"] == len(items)
+        assert result["complete"] is False
+
+    @pytest.mark.parametrize("is_cloud", [True, False])
+    def test_get_my_groups_empty(self, users_mixin, is_cloud):
+        """A valid empty membership response is distinct from a missing response."""
+        users_mixin.config.url = (
+            "https://test.atlassian.net" if is_cloud else "https://jira.example.com"
+        )
+        users_mixin.jira.myself.return_value = {"name": "caller", "accountId": "id"}
+        users_mixin.jira.get.return_value = (
+            [] if is_cloud else {"groups": {"size": 0, "items": []}}
+        )
+
+        result = users_mixin.get_my_groups()
+
+        assert result["groups"] == []
+        assert result["count"] == result["total"] == 0
+        assert result["complete"] is True
+
+    @pytest.mark.parametrize("identity", [None, {}, {"displayName": "Caller"}])
+    def test_get_my_groups_invalid_identity(self, users_mixin, identity):
+        """Never query memberships using a guessed or service-account identity."""
+        users_mixin.jira.myself.return_value = identity
+
+        with pytest.raises(ValueError, match="current.user"):
+            users_mixin.get_my_groups()
+        users_mixin.jira.get.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            None,
+            {},
+            {"groups": {}},
+            {"groups": {"size": 1, "items": None}},
+            {"groups": {"size": -1, "items": []}},
+            {"groups": {"size": True, "items": []}},
+            {"groups": {"size": 1, "items": [None]}},
+            {"groups": {"size": 1, "items": [{}]}},
+        ],
+    )
+    def test_get_my_groups_rejects_malformed_data(self, users_mixin, response):
+        """Malformed group data must fail instead of claiming zero groups."""
+        users_mixin.config.url = "https://jira.example.com"
+        users_mixin.jira.myself.return_value = {"name": "caller"}
+        users_mixin.jira.get.return_value = response
+
+        with pytest.raises(ValueError):
+            users_mixin.get_my_groups()
+
+    @pytest.mark.parametrize("status", [401, 403, 429])
+    @pytest.mark.parametrize("operation", ["myself", "get"])
+    def test_get_my_groups_api_errors(self, users_mixin, status, operation):
+        """Permission and rate-limit failures remain errors, not empty groups."""
+        users_mixin.jira.myself.return_value = {"accountId": "caller"}
+        response = requests.Response()
+        response.status_code = status
+        getattr(users_mixin.jira, operation).side_effect = requests.HTTPError(
+            "API failure", response=response
+        )
+        expected = (
+            MCPAtlassianAuthenticationError
+            if status in (401, 403)
+            else requests.HTTPError
+        )
+
+        with pytest.raises(expected):
+            users_mixin.get_my_groups()
+
     def test_get_current_user_account_id_cached(self, users_mixin):
         """Test that get_current_user_account_id returns cached value if available."""
         # Set cached value
