@@ -119,6 +119,17 @@ def _callback_uri(base_url: str, redirect_path: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, callback_path, "", ""))
 
 
+_SECRET_RE = re.compile(
+    r'("?(?:access_token|refresh_token|id_token|client_secret|code)"?\s*[:=]\s*"?)([^"&,\s}]+)',
+    re.IGNORECASE,
+)
+
+
+def _mask_secrets(text: str) -> str:
+    """Mask token/secret values that an upstream error body might echo."""
+    return _SECRET_RE.sub(lambda m: f"{m.group(1)}***", text or "")
+
+
 class HardenedOAuthProxy(OAuthProxy):
     """OAuthProxy with stricter DCR controls for grants and scopes."""
 
@@ -254,9 +265,42 @@ class HardenedOAuthProxy(OAuthProxy):
         )
         return pair
 
+    def _prepare_scopes_for_token_exchange(self, scopes: list[str]) -> list[str]:
+        """Send no ``scope`` in the code exchange (Jira DC token request).
+
+        RFC 6749 §4.1.3 has no ``scope`` parameter in the authorization-code
+        token request and Jira Data Center does not document one; the scope is
+        fixed at the authorize step. With ``READ_ALL`` Jira answered the token
+        request with HTTP 500.
+        """
+        return []
+
+    def _prepare_scopes_for_upstream_refresh(self, scopes: list[str]) -> list[str]:
+        """Same for refresh: the grant keeps the scope it was issued with."""
+        return []
+
     def _create_upstream_oauth_client(self) -> Any:
         """Log upstream HTTP boundaries using SDK-supported client event hooks."""
         client = super()._create_upstream_oauth_client()
+
+        async def upstream_error(response: Any) -> None:
+            # Jira's error body is the only place the cause is written
+            # (e.g. a 500 from the token endpoint); log it, never the request.
+            if response.status_code < 400:
+                return
+            try:
+                await response.aread()
+                body = _mask_secrets(response.text)[:1000]
+            except Exception:  # noqa: BLE001 - logging must not break the flow
+                body = "(gövde okunamadı)"
+            logger.error(
+                "Jira OAuth hatası: HTTP %s %s — %s",
+                response.status_code,
+                _endpoint(str(response.request.url)),
+                body,
+            )
+
+        client.event_hooks.setdefault("response", []).append(upstream_error)
         if os.getenv("MCP_OAUTH_TRACE", "").lower() not in {"true", "1", "yes"}:
             return client
 
