@@ -31,11 +31,14 @@ _LOGO_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
 }
-# FastMCP'nin varsayılanıyla aynı: form kendi adresine gönderilir, görsel yalnız
-# https/data, betik yok.
+# FastMCP'nin varsayılanıyla aynı: görsel yalnız https/data, betik yok.
+# form-action BİLEREK yok: Chrome form-action'ı formdan sonraki yönlendirme
+# zincirinin TAMAMINA uygular (Chromium #40923007). Form kendi adresine gider
+# ama onay sonrası 302 Jira'ya (başka origin) yönlenir; 'self' yazılırsa tarayıcı
+# yönlendirmeyi engeller ve kullanıcı izin ekranında takılı kalır.
 CSP_POLICY = (
     "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; "
-    "base-uri 'none'; form-action 'self'"
+    "base-uri 'none'"
 )
 
 

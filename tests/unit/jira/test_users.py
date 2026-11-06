@@ -1199,6 +1199,27 @@ class TestUserProfileMeIdentifier:
             assert result.account_id == "5b10ac8d82e05b22cc7d4ef5"
             mock_get_current.assert_called_once()
 
+    def test_me_on_server_dc_uses_myself_profile(self, jira_fetcher):
+        """Server/DC: 'me' reads myself() and never looks the KEY up as username.
+
+        Regression: myself() returns key 'JIRAUSER314092'; looking that up via
+        /user?username= returned 404 ("User 'JIRAUSER314092' not found").
+        """
+        jira_fetcher.config = MagicMock(is_cloud=False)
+        jira_fetcher.jira.myself = MagicMock(
+            return_value={
+                "key": "JIRAUSER314092",
+                "name": "gpardal",
+                "displayName": "Güleser Pardal",
+                "emailAddress": "gpardal@example.com",
+                "active": True,
+            }
+        )
+        jira_fetcher.jira.user = MagicMock(side_effect=AssertionError("no lookup"))
+        result = jira_fetcher.get_user_profile_by_identifier("me")
+        assert result.display_name == "Güleser Pardal"
+        jira_fetcher.jira.user.assert_not_called()
+
     def test_me_case_insensitive(self, jira_fetcher):
         """'Me', 'ME', 'mE' all resolve to current user."""
         user_response = {
