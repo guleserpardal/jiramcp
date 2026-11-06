@@ -42,7 +42,7 @@ def _flow_from_state(state: str) -> str:
     return hashlib.sha256(state.encode()).hexdigest()[:16]
 
 
-def _trace(step: str, message: str, **detail: str | int | bool) -> None:
+def _trace(step: str, message: str, **detail: Any) -> None:
     """Emit opt-in metadata only; no credentials, payloads or URL queries."""
     if os.getenv("MCP_OAUTH_TRACE", "").lower() not in {"true", "1", "yes"}:
         return
@@ -123,6 +123,15 @@ _SECRET_RE = re.compile(
     r'("?(?:access_token|refresh_token|id_token|client_secret|code)"?\s*[:=]\s*"?)([^"&,\s}]+)',
     re.IGNORECASE,
 )
+
+
+def _form_keys(request: Any) -> list[str]:
+    """Form gövdesindeki parametre adları (değerler okunmaz)."""
+    try:
+        govde = request.content.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted(parse_qs(govde, keep_blank_values=True))
 
 
 def _mask_secrets(text: str) -> str:
@@ -265,20 +274,6 @@ class HardenedOAuthProxy(OAuthProxy):
         )
         return pair
 
-    def _prepare_scopes_for_token_exchange(self, scopes: list[str]) -> list[str]:
-        """Send no ``scope`` in the code exchange (Jira DC token request).
-
-        RFC 6749 §4.1.3 has no ``scope`` parameter in the authorization-code
-        token request and Jira Data Center does not document one; the scope is
-        fixed at the authorize step. With ``READ_ALL`` Jira answered the token
-        request with HTTP 500.
-        """
-        return []
-
-    def _prepare_scopes_for_upstream_refresh(self, scopes: list[str]) -> list[str]:
-        """Same for refresh: the grant keeps the scope it was issued with."""
-        return []
-
     def _create_upstream_oauth_client(self) -> Any:
         """Log upstream HTTP boundaries using SDK-supported client event hooks."""
         client = super()._create_upstream_oauth_client()
@@ -310,14 +305,21 @@ class HardenedOAuthProxy(OAuthProxy):
                 "MCP Jira OAuth adresine istek gönderiyor",
                 method=request.method,
                 endpoint=_endpoint(str(request.url)),
+                contentType=request.headers.get("content-type"),
+                # Yalnız parametre ADLARI — değerler (kod, sır, verifier) yazılmaz.
+                params=_form_keys(request),
+                basicAuth="authorization" in request.headers,
             )
 
         async def returned(response: Any) -> None:
-            _trace(
-                "JIRA_HTTP_RETURN",
-                "Jira OAuth HTTP yanıtı alındı",
-                status=response.status_code,
-            )
+            detay: dict[str, Any] = {"status": response.status_code}
+            if response.status_code >= 400:
+                try:
+                    await response.aread()
+                    detay["body"] = _mask_secrets(response.text)[:600]
+                except Exception:  # noqa: BLE001 - izleme akışı bozmamalı
+                    detay["body"] = "(gövde okunamadı)"
+            _trace("JIRA_HTTP_RETURN", "Jira OAuth HTTP yanıtı alındı", **detay)
 
         client.event_hooks.setdefault("request", []).append(sending)
         client.event_hooks.setdefault("response", []).append(returned)
