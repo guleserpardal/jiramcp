@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import get_type_hints
@@ -125,9 +126,9 @@ async def test_oauth_proxy_dcr_pkce_authorization_code_exchange(
     assert oauth_proxy_testbed.issuer.token_requests[0]["grant_type"] == (
         "authorization_code"
     )
-    # Jira DC token isteği kapsam taşımaz (READ_ALL ile Jira HTTP 500 veriyordu);
-    # kapsam authorize adımında gider.
-    assert "scope" not in oauth_proxy_testbed.issuer.token_requests[0]
+    # Jira DC token isteğindeki scope'u token kaydına yazar; gönderilmezse
+    # "Cannot set non-null String field SCOPE to ''" ile HTTP 500 döner.
+    assert oauth_proxy_testbed.issuer.token_requests[0]["scope"] == "read:jira-work"
     assert oauth_proxy_testbed.issuer.authorize_requests[0]["scope"] == "read:jira-work"
 
 
@@ -462,6 +463,18 @@ async def test_oauth_step_trace_correlates_hops_without_credentials(
             ):
                 assert step in text
             assert flow in text
+            # Token isteğinin parametre ADLARI izde görünür (değerleri değil);
+            # Jira DC scope'u token kaydına yazdığı için scope gönderilir.
+            gonderim = next(
+                json.loads(r.split("[OAuth] ", 1)[1])
+                for r in records
+                if '"JIRA_HTTP_SEND"' in r and "code_verifier" in r
+            )
+            assert "grant_type" in gonderim["detail"]["params"]
+            assert "scope" in gonderim["detail"]["params"]
+            assert gonderim["detail"]["contentType"].startswith(
+                "application/x-www-form-urlencoded"
+            )
             for secret in (
                 code,
                 verifier,
