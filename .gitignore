@@ -83,3 +83,4 @@ dev/
 
 # Yerel çalıştırma ayarları (sırlar içerir)
 mcp.env
+local.env
