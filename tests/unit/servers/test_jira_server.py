@@ -508,6 +508,7 @@ def test_jira_mcp(mock_jira_fetcher, mock_base_jira_config):
         search,
         search_assignable_users,
         search_fields,
+        search_users,
         search_projects,
         transition_issue,
         update_issue,
@@ -553,6 +554,7 @@ def test_jira_mcp(mock_jira_fetcher, mock_base_jira_config):
     jira_sub_mcp.add_tool(get_link_types)
     jira_sub_mcp.add_tool(get_user_profile)
     jira_sub_mcp.add_tool(search_assignable_users)
+    jira_sub_mcp.add_tool(search_users)
     jira_sub_mcp.add_tool(create_issue)
     jira_sub_mcp.add_tool(create_customer_request)
     jira_sub_mcp.add_tool(batch_create_issues)
@@ -1235,6 +1237,41 @@ async def test_get_user_profile_tool_not_found(jira_client, mock_jira_fetcher):
     assert "error" in result_data
     assert "not found" in result_data["error"]
     assert result_data["user_identifier"] == "nonexistent@example.com"
+
+
+@pytest.mark.anyio
+async def test_search_users_tool_success(jira_client, mock_jira_fetcher):
+    """search_users finds people instance-wide without a project context."""
+    user = MagicMock()
+    user.to_simplified_dict.return_value = {
+        "display_name": "Başak Köksal",
+        "name": "basak.koksal@example.com",
+        "email": "basak.koksal@example.com",
+    }
+    mock_jira_fetcher.search_users.return_value = [user]
+
+    response = await jira_client.call_tool(
+        "jira_search_users", {"query": "Köksal", "limit": 5}
+    )
+
+    mock_jira_fetcher.search_users.assert_called_once_with(query="Köksal", limit=5)
+    result_data = json.loads(response.content[0].text)
+    assert result_data["success"] is True
+    assert result_data["count"] == 1
+    assert result_data["users"][0]["display_name"] == "Başak Köksal"
+
+
+@pytest.mark.anyio
+async def test_search_users_tool_error_is_reported(jira_client, mock_jira_fetcher):
+    """A Jira error is returned as success=false, not raised."""
+    mock_jira_fetcher.search_users.side_effect = ValueError("query must not be empty.")
+    response = await jira_client.call_tool("jira_search_users", {"query": " "})
+    result_data = json.loads(response.content[0].text)
+    assert result_data == {
+        "success": False,
+        "error": "query must not be empty.",
+        "query": " ",
+    }
 
 
 @pytest.mark.anyio

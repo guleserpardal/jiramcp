@@ -550,6 +550,57 @@ class UsersMixin(JiraClient):
         return users
 
     @handle_auth_errors("Jira API")
+    def search_users(self, query: str, limit: int = 20) -> list["JiraUser"]:
+        """
+        Search Jira users across the whole instance by name, username or email.
+
+        Uses GET /rest/api/2/user/search (Server/DC: ``username`` param, Cloud:
+        ``query``). Unlike :meth:`search_assignable_users` it needs no project
+        context, so a person can be found from a free-text name ("Ahmet Emre")
+        before building JQL. The caller needs the global "Browse Users"
+        permission; without it Jira returns an empty list or 403.
+
+        Args:
+            query: Display name / username / email substring
+                (case-insensitive, partial match on Server/DC).
+            limit: Maximum number of users to return (1..1000, clamped).
+
+        Returns:
+            List of JiraUser models (possibly empty), API order preserved.
+
+        Raises:
+            ValueError: If the query is empty.
+            MCPAtlassianAuthenticationError: If authentication fails (decorator).
+            Exception: For other API errors.
+        """
+        q = (query or "").strip()
+        if not q:
+            raise ValueError("query must not be empty.")
+        limit = max(1, min(int(limit or 20), 1000))
+        url = self.jira.resource_url("user/search")
+        query_param = "query" if self.config.is_cloud else "username"
+        params: dict[str, str | int] = {
+            query_param: q,
+            "maxResults": limit,
+            "startAt": 0,
+        }
+        try:
+            data = self.jira.get(url, params=params)
+        except HTTPError as http_err:
+            logger.warning(f"jira_search_users HTTPError for query={q!r}: {http_err}")
+            raise
+        except Exception as e:
+            logger.exception(f"jira_search_users failed for query={q!r}")
+            raise Exception(f"Error searching users for query '{q}': {e}") from e
+
+        if not isinstance(data, list):
+            logger.error(f"Unexpected response type from /user/search: {type(data)}")
+            return []
+        return [
+            JiraUser.from_api_response(raw) for raw in data if isinstance(raw, dict)
+        ]
+
+    @handle_auth_errors("Jira API")
     def get_user_profile_by_identifier(self, identifier: str) -> "JiraUser":
         """
         Retrieve Jira user profile information by identifier.
