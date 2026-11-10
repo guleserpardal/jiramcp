@@ -42,7 +42,7 @@ def _flow_from_state(state: str) -> str:
     return hashlib.sha256(state.encode()).hexdigest()[:16]
 
 
-def _trace(step: str, message: str, **detail: str | int | bool) -> None:
+def _trace(step: str, message: str, **detail: Any) -> None:
     """Emit opt-in metadata only; no credentials, payloads or URL queries."""
     if os.getenv("MCP_OAUTH_TRACE", "").lower() not in {"true", "1", "yes"}:
         return
@@ -117,6 +117,26 @@ def _callback_uri(base_url: str, redirect_path: str) -> str:
     parsed = urlsplit(base_url)
     callback_path = f"{parsed.path.rstrip('/')}/{redirect_path.lstrip('/')}"
     return urlunsplit((parsed.scheme, parsed.netloc, callback_path, "", ""))
+
+
+_SECRET_RE = re.compile(
+    r'("?(?:access_token|refresh_token|id_token|client_secret|code)"?\s*[:=]\s*"?)([^"&,\s}]+)',
+    re.IGNORECASE,
+)
+
+
+def _form_keys(request: Any) -> list[str]:
+    """Form gövdesindeki parametre adları (değerler okunmaz)."""
+    try:
+        govde = request.content.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted(parse_qs(govde, keep_blank_values=True))
+
+
+def _mask_secrets(text: str) -> str:
+    """Mask token/secret values that an upstream error body might echo."""
+    return _SECRET_RE.sub(lambda m: f"{m.group(1)}***", text or "")
 
 
 class HardenedOAuthProxy(OAuthProxy):
@@ -257,6 +277,25 @@ class HardenedOAuthProxy(OAuthProxy):
     def _create_upstream_oauth_client(self) -> Any:
         """Log upstream HTTP boundaries using SDK-supported client event hooks."""
         client = super()._create_upstream_oauth_client()
+
+        async def upstream_error(response: Any) -> None:
+            # Jira's error body is the only place the cause is written
+            # (e.g. a 500 from the token endpoint); log it, never the request.
+            if response.status_code < 400:
+                return
+            try:
+                await response.aread()
+                body = _mask_secrets(response.text)[:1000]
+            except Exception:  # noqa: BLE001 - logging must not break the flow
+                body = "(gövde okunamadı)"
+            logger.error(
+                "Jira OAuth hatası: HTTP %s %s — %s",
+                response.status_code,
+                _endpoint(str(response.request.url)),
+                body,
+            )
+
+        client.event_hooks.setdefault("response", []).append(upstream_error)
         if os.getenv("MCP_OAUTH_TRACE", "").lower() not in {"true", "1", "yes"}:
             return client
 
@@ -266,14 +305,21 @@ class HardenedOAuthProxy(OAuthProxy):
                 "MCP Jira OAuth adresine istek gönderiyor",
                 method=request.method,
                 endpoint=_endpoint(str(request.url)),
+                contentType=request.headers.get("content-type"),
+                # Yalnız parametre ADLARI — değerler (kod, sır, verifier) yazılmaz.
+                params=_form_keys(request),
+                basicAuth="authorization" in request.headers,
             )
 
         async def returned(response: Any) -> None:
-            _trace(
-                "JIRA_HTTP_RETURN",
-                "Jira OAuth HTTP yanıtı alındı",
-                status=response.status_code,
-            )
+            detay: dict[str, Any] = {"status": response.status_code}
+            if response.status_code >= 400:
+                try:
+                    await response.aread()
+                    detay["body"] = _mask_secrets(response.text)[:600]
+                except Exception:  # noqa: BLE001 - izleme akışı bozmamalı
+                    detay["body"] = "(gövde okunamadı)"
+            _trace("JIRA_HTTP_RETURN", "Jira OAuth HTTP yanıtı alındı", **detay)
 
         client.event_hooks.setdefault("request", []).append(sending)
         client.event_hooks.setdefault("response", []).append(returned)

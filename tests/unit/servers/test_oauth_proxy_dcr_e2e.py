@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import get_type_hints
@@ -125,6 +126,10 @@ async def test_oauth_proxy_dcr_pkce_authorization_code_exchange(
     assert oauth_proxy_testbed.issuer.token_requests[0]["grant_type"] == (
         "authorization_code"
     )
+    # Jira DC token isteğindeki scope'u token kaydına yazar; gönderilmezse
+    # "Cannot set non-null String field SCOPE to ''" ile HTTP 500 döner.
+    assert oauth_proxy_testbed.issuer.token_requests[0]["scope"] == "read:jira-work"
+    assert oauth_proxy_testbed.issuer.authorize_requests[0]["scope"] == "read:jira-work"
 
 
 @pytest.mark.anyio
@@ -458,6 +463,18 @@ async def test_oauth_step_trace_correlates_hops_without_credentials(
             ):
                 assert step in text
             assert flow in text
+            # Token isteğinin parametre ADLARI izde görünür (değerleri değil);
+            # Jira DC scope'u token kaydına yazdığı için scope gönderilir.
+            gonderim = next(
+                json.loads(r.split("[OAuth] ", 1)[1])
+                for r in records
+                if '"JIRA_HTTP_SEND"' in r and "code_verifier" in r
+            )
+            assert "grant_type" in gonderim["detail"]["params"]
+            assert "scope" in gonderim["detail"]["params"]
+            assert gonderim["detail"]["contentType"].startswith(
+                "application/x-www-form-urlencoded"
+            )
             for secret in (
                 code,
                 verifier,
@@ -470,3 +487,40 @@ async def test_oauth_step_trace_correlates_hops_without_credentials(
                 assert secret not in text
     finally:
         await upstream.stop()
+
+
+@pytest.mark.anyio
+async def test_upstream_error_body_is_logged_with_secrets_masked(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Jira'nın hata gövdesi (sebebin tek yazıldığı yer) loglanır; sırlar maskelenir."""
+    provider = _build_proxy("https://jira.test/rest/oauth2/latest", "https://mcp.test")
+    client = provider._create_upstream_oauth_client()
+    hooks = client.event_hooks["response"]
+    istek = httpx.Request("POST", "https://jira.test/rest/oauth2/latest/token")
+    caplog.set_level("ERROR", logger="mcp-atlassian.server.oauth_proxy")
+    hata = httpx.Response(
+        500,
+        request=istek,
+        content=b'{"message":"NullPointerException in scope READ_ALL","code":"GIZLI"}',
+    )
+    for h in hooks:
+        await h(hata)
+    tamam = httpx.Response(200, request=istek, content=b'{"access_token":"T"}')
+    for h in hooks:
+        await h(tamam)
+    await client.aclose()
+    kayit = " ".join(r.getMessage() for r in caplog.records)
+    assert "Jira OAuth hatası: HTTP 500" in kayit
+    assert "NullPointerException in scope READ_ALL" in kayit
+    assert "GIZLI" not in kayit
+    assert kayit.count("Jira OAuth hatası") == 1  # başarılı yanıt loglanmaz
+
+
+def test_mask_secrets() -> None:
+    from mcp_atlassian.servers.oauth_proxy import _mask_secrets
+
+    metin = '{"error":"x","access_token":"GIZLI","client_secret": "S3"} code=abc&x=1'
+    maskeli = _mask_secrets(metin)
+    assert "GIZLI" not in maskeli and "S3" not in maskeli and "abc" not in maskeli
+    assert '"error":"x"' in maskeli

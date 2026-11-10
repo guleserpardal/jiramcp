@@ -520,6 +520,67 @@ async def search_assignable_users(
 
 
 @jira_mcp.tool(
+    tags={"jira", "read", "toolset:jira_users"},
+    annotations={"title": "Search Users", "readOnlyHint": True},
+)
+async def search_users(
+    ctx: Context,
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "Free-form text to find Jira users by: display name, username "
+                "or email substring (e.g. 'Ahmet Emre', 'koksal', "
+                "'jane@example.com'). Case-insensitive, partial match."
+            ),
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Field(
+            description="Maximum number of users to return (default 20).",
+            default=20,
+            ge=1,
+            le=1000,
+        ),
+    ] = 20,
+) -> str:
+    """Search Jira users across the instance (no project context needed).
+
+    Use this to turn a person's name from a question ("issues assigned to
+    Ahmet Emre") into a concrete identifier (``name`` on Server/DC,
+    ``accountId`` on Cloud) before writing JQL such as ``assignee = "<name>"``.
+    Several users may match; the caller should disambiguate. Requires the
+    global "Browse Users" permission.
+
+    Args:
+        ctx: The FastMCP context.
+        query: Display name / username / email substring.
+        limit: Maximum number of users to return.
+
+    Returns:
+        JSON string: {"success": true, "count": N, "users": [...]} on success,
+        or an error object on failure.
+    """
+    jira = await get_jira_fetcher(ctx)
+    try:
+        users = jira.search_users(query=query, limit=limit)
+        result_users = [u.to_simplified_dict() for u in users]
+        response_data = {
+            "success": True,
+            "count": len(result_users),
+            "users": result_users,
+        }
+    except Exception as e:
+        if not isinstance(
+            e, MCPAtlassianAuthenticationError | OSError | HTTPError | ValueError
+        ):
+            logger.exception(f"Unexpected error in search_users for {query!r}:")
+        response_data = {"success": False, "error": str(e), "query": query}
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@jira_mcp.tool(
     tags={"jira", "read", "toolset:jira_watchers"},
     annotations={"title": "Get Issue Watchers", "readOnlyHint": True},
 )

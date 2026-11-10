@@ -1047,6 +1047,42 @@ class TestSearchAssignableUsers:
         mixin.jira = jira_client.jira
         return mixin
 
+    def test_search_users_server_dc_uses_username_param(self, users_mixin):
+        """Instance-wide search: /user/search, username= on Server/DC, no project."""
+        users_mixin.config = JiraConfig(
+            url="https://jira.example.com",
+            auth_type="pat",
+            personal_token="test-token",
+        )
+        users_mixin.jira.resource_url.return_value = "rest/api/2/user/search"
+        users_mixin.jira.get.return_value = [
+            {
+                "name": "ahmet.emre@example.com",
+                "key": "JIRAUSER42",
+                "displayName": "Ahmet Emre Yıldız",
+                "emailAddress": "ahmet.emre@example.com",
+            },
+            "beklenmeyen",
+        ]
+
+        users = users_mixin.search_users(query=" Ahmet Emre ", limit=5)
+
+        assert [u.display_name for u in users] == ["Ahmet Emre Yıldız"]
+        users_mixin.jira.resource_url.assert_called_once_with("user/search")
+        params = users_mixin.jira.get.call_args.kwargs["params"]
+        assert params == {"username": "Ahmet Emre", "maxResults": 5, "startAt": 0}
+
+    def test_search_users_cloud_uses_query_param(self, users_mixin):
+        users_mixin.jira.get.return_value = []
+        users_mixin.search_users(query="Smith")
+        params = users_mixin.jira.get.call_args.kwargs["params"]
+        assert params["query"] == "Smith"
+        assert "username" not in params
+
+    def test_search_users_rejects_empty_query(self, users_mixin):
+        with pytest.raises(ValueError):
+            users_mixin.search_users(query="  ")
+
     def test_search_assignable_users_by_project(self, users_mixin):
         """Cloud search uses query= and project= params."""
         users_mixin.jira.resource_url.return_value = "rest/api/2/user/assignable/search"

@@ -39,6 +39,14 @@ py -m venv .venv
 ## Çalıştırma
 
 ```bat
+C:\jiramcp\mcp.bat --env-file mcp.env
+```
+
+`mcp.bat` `PYTHONPATH`'i ayarlayıp `.venv`'deki Python ile `mcp_atlassian.main()`'i
+çağırır; verilen bütün seçenekleri olduğu gibi iletir. Taşıma, adres ve port
+`mcp.env`'den gelir (`TRANSPORT=streamable-http`, `HOST`, `PORT`). Elle karşılığı:
+
+```bat
 cd C:\jiramcp
 set PYTHONPATH=C:\jiramcp\src
 .venv\Scripts\python -c "from mcp_atlassian import main; main()" --env-file mcp.env --transport streamable-http --host 127.0.0.1 --port 9000
@@ -49,6 +57,19 @@ kimliksiz `POST http://localhost:9000/mcp` **401** dönmeli.
 
 Windows komut penceresinde **Hızlı Düzenleme Modu**'nu kapatın (pencere başlığı → Özellikler):
 pencereye tıklamak sunucuyu dondurur.
+
+## Araçları elle denemek (MCP Inspector)
+
+OAuth olmadan, kendi Jira kişisel token'ınızla yerel bir kopya açıp araç listesini
+(`tools/list`) görmek ve araç çağırmak (`tools/call`) için:
+
+1. `local.env.example` dosyasını `local.env` adıyla kopyalayıp `JIRA_PERSONAL_TOKEN`'ı
+   doldurun (`local.env` repoya konmaz).
+2. `npx @modelcontextprotocol/inspector` çalıştırın; tarayıcıda açılan ekranda
+   **Transport Type** `STDIO`, **Command** `C:\jiramcp\mcp.bat`, **Arguments**
+   `--env-file C:\jiramcp\local.env`.
+3. **Connect** → **Tools** → **List Tools**. `READ_ONLY_MODE=true` iken yazma araçları
+   listede görünmez.
 
 ## Onay ekranı
 
