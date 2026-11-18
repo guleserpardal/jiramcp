@@ -91,8 +91,61 @@ Sunucunun çalıştığı makinede, şifreli dosyalar olarak:
 - Linux: `~/.local/share/fastmcp/oauth-proxy/<kod>/`
 
 Şifreleme anahtarı Jira client secret'tan türetilir; secret değişirse herkes bir kez
-yeniden bağlanır. Birden çok kopya çalışacaksa ortak bir Redis deposu gerekir
-(`ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE`).
+yeniden bağlanır. Birden çok kopya çalışacaksa ortak depo gerekir: PostgreSQL (aşağıda).
+
+## PostgreSQL deposu
+
+Token'lar dosya yerine PostgreSQL'de tutulabilir. Üç tablo vardır, tablolar Alembic ile
+yönetilir (migration'lar paketin içinde: `src/mcp_atlassian/db/migrations/`):
+
+| Tablo | İçerik |
+| --- | --- |
+| `mcp_oauth_kv` | FastMCP OAuth durumu (istemci kayıtları, Jira token'ları, refresh token'lar). Değerler **şifreli**. FastMCP koleksiyonları ayrı tablo değil, `collection` kolonudur. |
+| `mcp_grant_index` | Hangi izin kime / hangi uygulamaya ait. **Token içermez.** `grant_id` = `mcp_oauth_kv`'deki `mcp-upstream-tokens` satırının `key`'i (mantıksal eşleme, FK değil). |
+| `mcp_tool_call_audit` | Araç çağrısının sonucu ve süresi; argüman değeri yazılmaz. Saklama 180 gün. |
+
+1. Tabloları açın (veritabanı boş olabilir; başka uygulamaların tablolarına dokunulmaz,
+   sürüm tablosu `mcp_alembic_version`):
+
+   ```bat
+   set MCP_STORAGE_PG_URL=postgresql://kullanici:parola@sunucu:5432/veritabani
+   .venv\Scripts\python -m mcp_atlassian.db upgrade
+   ```
+
+   SQL'i bağlanmadan görmek (DBA'ya vermek için): `python -m mcp_atlassian.db sql`.
+   Docker: `docker run --rm -e MCP_STORAGE_PG_URL=… --entrypoint python <imaj> -m mcp_atlassian.db upgrade`.
+
+2. `mcp.env`'e ekleyin:
+
+   ```ini
+   ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE=factory
+   ATLASSIAN_OAUTH_CLIENT_STORAGE_FACTORY=mcp_atlassian.servers.pg_storage:build_storage
+   MCP_STORAGE_PG_URL=postgresql://kullanici:parola@sunucu:5432/veritabani
+   ```
+
+   Ayrı bir şifreleme anahtarı **yoktur**: anahtar `ATLASSIAN_OAUTH_CLIENT_SECRET`'tan,
+   FastMCP'nin dosya deposuyla birebir aynı yolla türetilir. Secret değişirse kayıtlar
+   okunamaz, "yok" sayılır ve herkes bir kez yeniden bağlanır (hata vermez). Birden çok
+   MCP kopyası aynı tabloyu paylaşabilir; hepsinde aynı secret olmalı. Veritabanını ele
+   geçiren secret olmadan token okuyamaz.
+
+3. Temizlik (cron / pg_cron):
+
+   ```sql
+   -- saatte bir: süresi dolan OAuth kayıtları
+   DELETE FROM mcp_oauth_kv WHERE expires_at IS NOT NULL AND expires_at < now();
+   -- günde bir: denetim kayıtları 180 günden eski
+   DELETE FROM mcp_tool_call_audit WHERE called_at < now() - interval '180 days';
+   ```
+
+Geçişte dosyadaki eski kayıtlar taşınmaz; kullanıcılar bir kez yeniden bağlanır.
+
+Yeni migration (geliştirme): şemayı `src/mcp_atlassian/db/schema.py`'de değiştirin,
+sonra `uv run alembic revision --autogenerate -m "aciklama"` ve dosyayı elle gözden
+geçirin. `uv run alembic check` şema ile migration'ların uyumunu denetler. Gerçek
+veritabanına karşı testler:
+`MCP_TEST_PG_URL=postgresql://… uv run pytest tests/integration/test_mcp_pg_storage.py --integration`
+(o veritabanındaki `mcp_` tabloları silinip yeniden açılır).
 
 ## Güvenlik ayarları
 

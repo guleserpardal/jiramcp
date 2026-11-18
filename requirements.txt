@@ -4,6 +4,8 @@ aiofile==3.9.0 ; python_full_version < '3.11'
     # via py-key-value-aio
 aiofile==3.11.1 ; python_full_version >= '3.11'
     # via py-key-value-aio
+alembic==1.20.1
+    # via mcp-atlassian
 annotated-types==0.7.0
     # via pydantic
 anyio==4.16.0
@@ -16,7 +18,11 @@ anyio==4.16.0
     #   starlette
     #   watchfiles
 async-timeout==5.0.1 ; python_full_version < '3.11.3'
-    # via redis
+    # via
+    #   asyncpg
+    #   redis
+asyncpg==0.32.0
+    # via py-key-value-aio
 atlassian-python-api==4.0.7
     # via mcp-atlassian
 attrs==25.4.0
@@ -97,6 +103,8 @@ fastmcp==3.4.11
     # via mcp-atlassian
 fastmcp-slim==3.4.11
     # via fastmcp
+greenlet==3.5.6
+    # via sqlalchemy
 griffelib==2.1.0
     # via fastmcp-slim
 h11==0.16.0
@@ -151,6 +159,8 @@ keyring==25.7.0
     #   py-key-value-aio
 lxml==6.1.1
     # via markdown-to-confluence
+mako==1.4.3
+    # via alembic
 markdown==3.10.2
     # via
     #   markdown-to-confluence
@@ -162,6 +172,8 @@ markdown-to-confluence==0.6.1
     # via mcp-atlassian
 markdownify==1.2.2
     # via mcp-atlassian
+markupsafe==3.0.3
+    # via mako
 mcp==1.30.0
     # via
     #   fastmcp-slim
@@ -191,7 +203,9 @@ pathable==0.5.0
 platformdirs==4.9.2
     # via fastmcp-slim
 py-key-value-aio==0.4.5
-    # via fastmcp-slim
+    # via
+    #   fastmcp-slim
+    #   mcp-atlassian
 pycparser==3.0 ; (implementation_name != 'PyPy' and implementation_name != 'pypy' and os_name == 'nt') or (implementation_name != 'PyPy' and platform_python_implementation != 'PyPy')
     # via cffi
 pydantic==2.12.5
@@ -286,6 +300,14 @@ soupsieve==2.10 ; python_full_version < '3.11.5'
     # via beautifulsoup4
 soupsieve==3.0.4 ; python_full_version >= '3.11.5'
     # via beautifulsoup4
+sqlalchemy==2.0.58 ; python_full_version < '3.11'
+    # via
+    #   alembic
+    #   mcp-atlassian
+sqlalchemy==2.1.9 ; python_full_version >= '3.11'
+    # via
+    #   alembic
+    #   mcp-atlassian
 sse-starlette==3.2.0
     # via mcp
 starlette==1.3.1
@@ -297,7 +319,9 @@ starlette==1.3.1
 thefuzz==0.22.1
     # via mcp-atlassian
 tomli==2.4.0 ; python_full_version < '3.11'
-    # via cyclopts
+    # via
+    #   alembic
+    #   cyclopts
 trio==0.33.0
     # via mcp-atlassian
 truststore==0.10.4
@@ -310,6 +334,7 @@ types-python-dateutil==2.9.0.20260124
     # via mcp-atlassian
 typing-extensions==4.16.0
     # via
+    #   alembic
     #   anyio
     #   atlassian-python-api
     #   beautifulsoup4
@@ -328,6 +353,7 @@ typing-extensions==4.16.0
     #   pydantic-settings
     #   pyjwt
     #   referencing
+    #   sqlalchemy
     #   starlette
     #   typing-inspection
     #   uvicorn
