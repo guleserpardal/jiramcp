@@ -1,6 +1,7 @@
 """Migrations and storage against a real PostgreSQL.
 
-Run with ``MCP_TEST_PG_URL=postgresql://user:pass@host:5432/emptydb``; the
+Run with ``MCP_TEST_PG_URL=postgresql://user@host:5432/emptydb`` (password in
+``PGPASSWORD``); the
 database's ``mcp_`` tables are dropped and recreated.
 """
 

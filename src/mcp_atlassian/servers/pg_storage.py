@@ -4,7 +4,8 @@ Enable with::
 
     ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE=factory
     ATLASSIAN_OAUTH_CLIENT_STORAGE_FACTORY=mcp_atlassian.servers.pg_storage:build_storage
-    MCP_STORAGE_PG_URL=postgresql://user:pass@host:5432/db
+    MCP_STORAGE_PG_URL=postgresql://user@host:5432/db
+    PGPASSWORD=...   # asyncpg reads it; keeps the password out of the URL
 
 The table is created by the migrations (``python -m mcp_atlassian.db upgrade``),
 never by the store. Values are Fernet-encrypted with a key derived from the Jira

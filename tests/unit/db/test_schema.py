@@ -40,7 +40,7 @@ def test_grant_link_is_not_a_foreign_key() -> None:
 
 
 def test_offline_sql(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MCP_STORAGE_PG_URL", "postgresql://u:p@h/db")
+    monkeypatch.setenv("MCP_STORAGE_PG_URL", "postgresql://h/db")
     buffer = io.StringIO()
     cfg = alembic_config()
     cfg.output_buffer = buffer
@@ -53,5 +53,5 @@ def test_offline_sql(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_url_conversion() -> None:
-    assert sqlalchemy_url("postgresql://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
-    assert asyncpg_url("postgresql+psycopg://u:p@h/db") == "postgresql://u:p@h/db"
+    assert sqlalchemy_url("postgresql://h/db") == "postgresql+asyncpg://h/db"
+    assert asyncpg_url("postgresql+psycopg://h/db") == "postgresql://h/db"

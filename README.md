@@ -108,7 +108,8 @@ yönetilir (migration'lar paketin içinde: `src/mcp_atlassian/db/migrations/`):
    sürüm tablosu `mcp_alembic_version`):
 
    ```bat
-   set MCP_STORAGE_PG_URL=postgresql://kullanici:parola@sunucu:5432/veritabani
+   set MCP_STORAGE_PG_URL=postgresql://kullanici@sunucu:5432/veritabani
+   set PGPASSWORD=…
    .venv\Scripts\python -m mcp_atlassian.db upgrade
    ```
 
@@ -120,8 +121,12 @@ yönetilir (migration'lar paketin içinde: `src/mcp_atlassian/db/migrations/`):
    ```ini
    ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE=factory
    ATLASSIAN_OAUTH_CLIENT_STORAGE_FACTORY=mcp_atlassian.servers.pg_storage:build_storage
-   MCP_STORAGE_PG_URL=postgresql://kullanici:parola@sunucu:5432/veritabani
+   MCP_STORAGE_PG_URL=postgresql://kullanici@sunucu:5432/veritabani
+   PGPASSWORD=…
    ```
+
+   Parola URL'ye yazılmaz, `PGPASSWORD` değişkeninde durur (asyncpg okur). Böylece
+   bağlantı adresi loglara ya da ekran görüntüsüne düşse bile parola sızmaz.
 
    Ayrı bir şifreleme anahtarı **yoktur**: anahtar `ATLASSIAN_OAUTH_CLIENT_SECRET`'tan,
    FastMCP'nin dosya deposuyla birebir aynı yolla türetilir. Secret değişirse kayıtlar
@@ -144,7 +149,7 @@ Yeni migration (geliştirme): şemayı `src/mcp_atlassian/db/schema.py`'de deği
 sonra `uv run alembic revision --autogenerate -m "aciklama"` ve dosyayı elle gözden
 geçirin. `uv run alembic check` şema ile migration'ların uyumunu denetler. Gerçek
 veritabanına karşı testler:
-`MCP_TEST_PG_URL=postgresql://… uv run pytest tests/integration/test_mcp_pg_storage.py --integration`
+`MCP_TEST_PG_URL=postgresql://kullanici@sunucu/test_db uv run pytest tests/integration/test_mcp_pg_storage.py --integration`
 (o veritabanındaki `mcp_` tabloları silinip yeniden açılır).
 
 ## Güvenlik ayarları

@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 
 PG_URL_ENV = "MCP_STORAGE_PG_URL"
-"""Environment variable holding ``postgresql://user:pass@host:5432/db``."""
+"""Environment variable holding ``postgresql://user@host:5432/db``.
+
+Keep the password out of the URL: asyncpg reads ``PGPASSWORD``.
+"""
 
 VERSION_TABLE = "mcp_alembic_version"
 """Alembic version table; prefixed so it can share a database with other apps."""
