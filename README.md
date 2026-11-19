@@ -134,7 +134,25 @@ yönetilir (migration'lar paketin içinde: `src/mcp_atlassian/db/migrations/`):
    MCP kopyası aynı tabloyu paylaşabilir; hepsinde aynı secret olmalı. Veritabanını ele
    geçiren secret olmadan token okuyamaz.
 
-3. Temizlik (cron / pg_cron):
+3. Hız: depoya her erişim veritabanına bir gidiş-dönüştür (bağlanma ~14, her MCP isteği
+   ~4). Okumalar bu yüzden 60 sn bellekte tutulur, yazmalar her zaman veritabanına gider.
+   Bağlantı havuzu 1 bağlantıyla başlar, boşta kalanları 60 sn'de kapatır (güvenlik
+   duvarının sessizce kestiği bağlantıya takılmamak için).
+
+   ```ini
+   MCP_STORAGE_CACHE_SECONDS=60   # 0 = önbellek kapalı
+   MCP_STORAGE_PG_POOL_MAX=5
+   ```
+
+   Yavaşlık varsa MCP sunucusunda ölçün:
+   `python -m mcp_atlassian.db ping` → bağlanma süresi ve sorgu gidiş-dönüşü. Gidiş-dönüş
+   birkaç ms'den fazlaysa veritabanı MCP'ye ağ olarak uzaktır.
+
+   Birden çok MCP kopyası çalışıyorsa: bir kopyadaki değişiklik ötekinin önbelleğine en
+   geç `MCP_STORAGE_CACHE_SECONDS` sonra yansır. Bağlantı iptali bundan etkilenmez
+   (iptal kaydı önbelleğe alınmaz).
+
+4. Temizlik (cron / pg_cron):
 
    ```sql
    -- saatte bir: süresi dolan OAuth kayıtları
