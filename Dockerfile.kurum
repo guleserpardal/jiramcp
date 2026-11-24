@@ -1,0 +1,72 @@
+# Kurum içi Jira MCP imajı.
+#
+# Upstream Dockerfile ghcr.io'daki uv imajını kullanıyor; kurum ağında ghcr.io
+# çoğu zaman kapalı. Bu dosya yalnız Python taban imajı + pip ile kurar:
+#   - Taban imaj ve pip deposu build argümanıyla kurum aynasına çevrilebilir.
+#   - Bağımlılıklar requirements.txt'ten (uv.lock'tan üretilmiş, sabit sürümler).
+#   - Kurum kök sertifikaları docker/certs/*.crt ile eklenir (Jira, PostgreSQL TLS).
+#
+# Derleme:
+#   docker build -f Dockerfile.kurum -t jira-mcp:1.0 .
+#   docker build -f Dockerfile.kurum \
+#     --build-arg BASE_IMAGE=nexus.kurum.local/python:3.13-slim \
+#     --build-arg PIP_INDEX_URL=https://nexus.kurum.local/repository/pypi/simple \
+#     -t jira-mcp:1.0 .
+
+ARG BASE_IMAGE=python:3.13-slim
+
+FROM ${BASE_IMAGE} AS build
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG VERSION=0.0.0
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Kurum sertifikaları derlemede de gerekir (pip, kurum aynasına TLS ile gidebilir).
+COPY docker/certs/ /usr/local/share/ca-certificates/kurum/
+RUN update-ca-certificates >/dev/null 2>&1 || true
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+WORKDIR /src
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Önce bağımlılıklar: kaynak değişince bu katman önbellekten gelir.
+COPY requirements.txt .
+RUN pip install -r requirements.txt pypac
+
+# Sonra projenin kendisi (bağımlılıklar zaten kurulu: --no-deps).
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERSION}\"/" pyproject.toml \
+ && pip install --no-deps . \
+ && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+
+FROM ${BASE_IMAGE}
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    FASTMCP_CHECK_FOR_UPDATES=off \
+    TRANSPORT=streamable-http \
+    HOST=0.0.0.0 \
+    PORT=9000
+
+COPY docker/certs/ /usr/local/share/ca-certificates/kurum/
+RUN update-ca-certificates >/dev/null 2>&1 || true \
+ && useradd --create-home --uid 10001 app
+
+COPY --from=build /opt/venv /opt/venv
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
+USER app
+WORKDIR /home/app
+EXPOSE 9000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import os,socket; socket.create_connection(('127.0.0.1', int(os.environ.get('PORT','9000'))), 3)" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

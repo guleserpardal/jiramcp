@@ -58,6 +58,40 @@ kimliksiz `POST http://localhost:9000/mcp` **401** dönmeli.
 Windows komut penceresinde **Hızlı Düzenleme Modu**'nu kapatın (pencere başlığı → Özellikler):
 pencereye tıklamak sunucuyu dondurur.
 
+## Docker ile çalıştırma
+
+Kurum ağı için `Dockerfile.kurum` kullanılır. Kökteki `Dockerfile` upstream'in
+dosyasıdır ve `ghcr.io`'dan imaj çeker; kurum ağında genelde kapalıdır.
+
+1. Kurum kök/ara sertifikalarını `docker/certs/` altına `.crt` (PEM) olarak koyun.
+   Jira, PostgreSQL ve kurum pip aynası TLS ile bu sertifikalarla doğrulanır.
+2. Derleyin (taban imaj ve pip deposu kurum aynasıysa argümanla verin):
+
+```bash
+docker build -f Dockerfile.kurum --build-arg VERSION=1.0.0 \
+  --build-arg BASE_IMAGE=<kurum-registry>/python:3.13-slim \
+  --build-arg PIP_INDEX_URL=https://<kurum-nexus>/repository/pypi/simple \
+  -t jira-mcp:1.0.0 .
+```
+
+3. Çalıştırın. Ayarlar `mcp.env`'den gelir; imaj içinde `HOST=0.0.0.0`,
+   `PORT=9000`, `TRANSPORT=streamable-http` hazırdır:
+
+```bash
+docker run -d --name jira-mcp -p 9000:9000 --env-file mcp.env \
+  -e MCP_DB_MIGRATE_ON_START=true jira-mcp:1.0.0
+```
+
+- `MCP_DB_MIGRATE_ON_START=true`: açılışta PostgreSQL tablolarını günceller. Birden
+  çok kopya çalışacaksa kapalı bırakın, migration'ı dağıtımdan önce bir kez ayrı
+  çalıştırın: `docker run --rm --env-file mcp.env jira-mcp:1.0.0 python -m mcp_atlassian.db upgrade`
+- Şifreler (`PGPASSWORD`, `ATLASSIAN_OAUTH_CLIENT_SECRET`) imaja girmez; ortam
+  değişkeni ya da platformun gizli değer (secret) mekanizmasıyla verilir.
+- İmaj root olmayan kullanıcıyla çalışır, sağlık kontrolü portu yoklar.
+- `PUBLIC_BASE_URL` ve `ATLASSIAN_OAUTH_REDIRECT_URI` dışarıdan erişilen adres
+  olmalıdır (ör. `https://jira-mcp.kurum.local`), `localhost` ya da `0.0.0.0` değil.
+  Jira'daki Application Link'in yönlendirme adresi de buna göre güncellenir.
+
 ## Araçları elle denemek (MCP Inspector)
 
 OAuth olmadan, kendi Jira kişisel token'ınızla yerel bir kopya açıp araç listesini
