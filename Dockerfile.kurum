@@ -1,72 +1,44 @@
-# Kurum içi Jira MCP imajı.
-#
-# Upstream Dockerfile ghcr.io'daki uv imajını kullanıyor; kurum ağında ghcr.io
-# çoğu zaman kapalı. Bu dosya yalnız Python taban imajı + pip ile kurar:
-#   - Taban imaj ve pip deposu build argümanıyla kurum aynasına çevrilebilir.
-#   - Bağımlılıklar requirements.txt'ten (uv.lock'tan üretilmiş, sabit sürümler).
-#   - Kurum kök sertifikaları docker/certs/*.crt ile eklenir (Jira, PostgreSQL TLS).
-#
-# Derleme:
-#   docker build -f Dockerfile.kurum -t jira-mcp:1.0 .
-#   docker build -f Dockerfile.kurum \
-#     --build-arg BASE_IMAGE=nexus.kurum.local/python:3.13-slim \
-#     --build-arg PIP_INDEX_URL=https://nexus.kurum.local/repository/pypi/simple \
-#     -t jira-mcp:1.0 .
+# QNB Sigorta — Jira MCP sunucusu (backend Dockerfile'ı ile aynı düzen)
+FROM python:3.12-slim-bookworm
 
-ARG BASE_IMAGE=python:3.13-slim
-
-FROM ${BASE_IMAGE} AS build
-ARG PIP_INDEX_URL=https://pypi.org/simple
-ARG VERSION=0.0.0
-ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
-
-# Kurum sertifikaları derlemede de gerekir (pip, kurum aynasına TLS ile gidebilir).
-COPY docker/certs/ /usr/local/share/ca-certificates/kurum/
-RUN update-ca-certificates >/dev/null 2>&1 || true
-ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
-
-WORKDIR /src
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Önce bağımlılıklar: kaynak değişince bu katman önbellekten gelir.
-COPY requirements.txt .
-RUN pip install -r requirements.txt pypac
-
-# Sonra projenin kendisi (bağımlılıklar zaten kurulu: --no-deps).
-COPY pyproject.toml README.md ./
-COPY src ./src
-RUN sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERSION}\"/" pyproject.toml \
- && pip install --no-deps . \
- && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} +
-
-
-FROM ${BASE_IMAGE}
-ENV PATH="/opt/venv/bin:$PATH" \
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app/src \
     FASTMCP_CHECK_FOR_UPDATES=off \
     TRANSPORT=streamable-http \
     HOST=0.0.0.0 \
     PORT=9000
 
-COPY docker/certs/ /usr/local/share/ca-certificates/kurum/
-RUN update-ca-certificates >/dev/null 2>&1 || true \
- && useradd --create-home --uid 10001 app
+# Kurumsal PyPI proxy (host pip ile ayni). Verilmezse PyPI kullanilir.
+#   docker build -f Dockerfile.kurum \
+#     --build-arg PIP_INDEX_URL=https://<kurum-nexus>/repository/pypi-group/simple \
+#     --build-arg PIP_TRUSTED_HOST=<kurum-nexus> -t jira-mcp:1.0.0 .
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
 
-COPY --from=build /opt/venv /opt/venv
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+WORKDIR /app
 
-USER app
-WORKDIR /home/app
+# Bagimliliklar uv.lock'tan uretilmis requirements.txt'ten (sabit surumler).
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt pypac
+
+# Kod paket olarak kurulmaz, mcp.bat gibi kaynaktan calisir (PYTHONPATH=/app/src).
+COPY src ./src
+
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:0 /app \
+    && chmod -R g=u /app
+USER appuser
+
 EXPOSE 9000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import os,socket; socket.create_connection(('127.0.0.1', int(os.environ.get('PORT','9000'))), 3)" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"9000\")}/healthz')"
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# MCP_DB_MIGRATE_ON_START=true ise once PostgreSQL tablolari guncellenir.
+# Birden cok kopya calisacaksa kapali birakin, migration'i ayri calistirin:
+#   docker run --rm --env-file mcp.env <imaj> python -m mcp_atlassian.db upgrade
+CMD ["sh", "-c", "if [ \"$MCP_DB_MIGRATE_ON_START\" = \"true\" ]; then python -m mcp_atlassian.db upgrade || exit 1; fi; exec python -c 'from mcp_atlassian import main; main()'"]
