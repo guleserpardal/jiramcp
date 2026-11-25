@@ -43,10 +43,10 @@ from mcp_atlassian.utils.urls import is_atlassian_cloud_url, validate_url_for_ss
 
 from .client_storage import build_oauth_client_storage_from_env
 from .confluence import confluence_mcp
+from .consent_page import install_consent_page
 from .context import MainAppContext
 from .error_handling import ErrorPreservingFastMCP
 from .jira import jira_mcp
-from .consent_page import install_consent_page
 from .oauth_proxy import HardenedOAuthProxy, parse_env_list
 
 logger = logging.getLogger("mcp-atlassian.server.main")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -13,7 +14,7 @@ import time
 from collections.abc import Iterable
 from contextvars import ContextVar
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit, urlunsplit
 
 from fastmcp.server.auth.auth import AccessToken as FastMCPAccessToken
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
@@ -29,6 +30,7 @@ from mcp.server.auth.settings import RevocationOptions
 from mcp.shared.auth import OAuthToken
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -324,6 +326,67 @@ class HardenedOAuthProxy(OAuthProxy):
         client.event_hooks.setdefault("request", []).append(sending)
         client.event_hooks.setdefault("response", []).append(returned)
         return client
+
+    async def _handle_idp_callback(
+        self, request: Request
+    ) -> HTMLResponse | RedirectResponse:
+        """Return Jira's refusal to the app even when Jira drops ``state``.
+
+        FastMCP forwards an upstream ``error`` to the client only if ``state``
+        names a live transaction. Jira Data Center's denial redirect can arrive
+        without it, and FastMCP then shows its own English error page: the app
+        never learns that access was refused and its popup stays open. The
+        transaction is recovered from the signed consent-binding cookie this
+        browser received when it approved the MCP consent screen. If that is not
+        exactly one live transaction, nothing is guessed: a Turkish page is shown.
+        """
+        error = request.query_params.get("error")
+        if error and not request.query_params.get("code"):
+            state = request.query_params.get("state")
+            known = await self._transaction_store.get(key=state) if state else None
+            if known is None:
+                return await self._return_orphan_idp_error(request, error)
+        return await super()._handle_idp_callback(request)
+
+    async def _return_orphan_idp_error(
+        self, request: Request, error: str
+    ) -> HTMLResponse | RedirectResponse:
+        from mcp_atlassian.servers.oauth_error_page import create_idp_error_html_tr
+
+        matches = []
+        for txn_id, token in self._read_consent_bindings(request).items():
+            txn = await self._transaction_store.get(key=txn_id)
+            if (
+                txn is not None
+                and txn.consent_token
+                and hmac.compare_digest(txn.consent_token, token)
+            ):
+                matches.append(txn)
+        if len(matches) == 1 and self._validate_client_redirect_uri(
+            matches[0].client_redirect_uri
+        ):
+            txn = matches[0]
+            params = {"error": error, "state": txn.client_state or ""}
+            description = request.query_params.get("error_description")
+            if description:
+                params["error_description"] = description
+            separator = "&" if "?" in txn.client_redirect_uri else "?"
+            _trace(
+                "JIRA_DENIED_RETURNED",
+                "Jira hatası (state'siz) uygulamaya geri iletildi",
+                error=error,
+            )
+            return RedirectResponse(
+                url=f"{txn.client_redirect_uri}{separator}{urlencode(params)}",
+                status_code=302,
+            )
+        logger.warning(
+            "Jira yetkilendirme hatası uygulamaya iletilemedi "
+            "(eşleşen bekleyen işlem: %d): %s",
+            len(matches),
+            error,
+        )
+        return HTMLResponse(create_idp_error_html_tr(error), status_code=400)
 
     async def load_authorization_code(
         self,

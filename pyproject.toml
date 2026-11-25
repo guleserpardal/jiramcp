@@ -33,6 +33,9 @@ dependencies = [
     "cryptography>=50.0.0,<51",
     "truststore>=0.10.0",
     "tzdata>=2024.1; platform_system=='Windows'",
+    "sqlalchemy[asyncio]>=2.0.30,<3",
+    "alembic>=1.13,<2",
+    "py-key-value-aio[postgresql]>=0.4.5,<0.5",
 ]
 
 [project.optional-dependencies]

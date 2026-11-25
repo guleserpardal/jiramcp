@@ -1,0 +1,44 @@
+# QNB Sigorta — Jira MCP sunucusu (backend Dockerfile'ı ile aynı düzen)
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app/src \
+    FASTMCP_CHECK_FOR_UPDATES=off \
+    TRANSPORT=streamable-http \
+    HOST=0.0.0.0 \
+    PORT=9000
+
+# Kurumsal PyPI proxy (host pip ile ayni). Verilmezse PyPI kullanilir.
+#   docker build -f Dockerfile.kurum \
+#     --build-arg PIP_INDEX_URL=https://<kurum-nexus>/repository/pypi-group/simple \
+#     --build-arg PIP_TRUSTED_HOST=<kurum-nexus> -t jira-mcp:1.0.0 .
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+WORKDIR /app
+
+# Bagimliliklar uv.lock'tan uretilmis requirements.txt'ten (sabit surumler).
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt pypac
+
+# Kod paket olarak kurulmaz, mcp.bat gibi kaynaktan calisir (PYTHONPATH=/app/src).
+COPY src ./src
+
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:0 /app \
+    && chmod -R g=u /app
+USER appuser
+
+EXPOSE 9000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"9000\")}/healthz')"
+
+# MCP_DB_MIGRATE_ON_START=true ise once PostgreSQL tablolari guncellenir.
+# Birden cok kopya calisacaksa kapali birakin, migration'i ayri calistirin:
+#   docker run --rm --env-file mcp.env <imaj> python -m mcp_atlassian.db upgrade
+CMD ["sh", "-c", "if [ \"$MCP_DB_MIGRATE_ON_START\" = \"true\" ]; then python -m mcp_atlassian.db upgrade || exit 1; fi; exec python -c 'from mcp_atlassian import main; main()'"]

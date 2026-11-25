@@ -58,6 +58,32 @@ kimliksiz `POST http://localhost:9000/mcp` **401** dönmeli.
 Windows komut penceresinde **Hızlı Düzenleme Modu**'nu kapatın (pencere başlığı → Özellikler):
 pencereye tıklamak sunucuyu dondurur.
 
+## Docker ile çalıştırma
+
+Kurum için `Dockerfile.kurum` kullanılır (Chatbot backend Dockerfile'ı ile aynı düzen:
+`python:3.12-slim-bookworm`, kurum PyPI aynası, `appuser` uid 10001 / grup 0). Kökteki
+`Dockerfile` upstream'in dosyasıdır ve `ghcr.io`'dan imaj çeker.
+
+```bash
+docker build -f Dockerfile.kurum \
+  --build-arg PIP_INDEX_URL=https://<kurum-nexus>/repository/pypi-group/simple \
+  --build-arg PIP_TRUSTED_HOST=<kurum-nexus> -t jira-mcp:1.0.0 .
+docker run -d --name jira-mcp -p 9000:9000 --env-file mcp.env \
+  -e MCP_DB_MIGRATE_ON_START=true jira-mcp:1.0.0
+```
+
+- Kod paket olarak kurulmaz; `mcp.bat` gibi kaynaktan çalışır (`PYTHONPATH=/app/src`).
+  İmaj içinde `TRANSPORT=streamable-http`, `HOST=0.0.0.0`, `PORT=9000` hazırdır.
+- Sağlık kontrolü `GET /healthz`.
+- `MCP_DB_MIGRATE_ON_START=true`: açılışta PostgreSQL tablolarını günceller. Birden
+  çok kopya çalışacaksa kapalı bırakın, migration'ı dağıtımdan önce bir kez ayrı
+  çalıştırın: `docker run --rm --env-file mcp.env jira-mcp:1.0.0 python -m mcp_atlassian.db upgrade`
+- Şifreler (`PGPASSWORD`, `ATLASSIAN_OAUTH_CLIENT_SECRET`) imaja girmez; ortam
+  değişkeni ya da platformun gizli değer (secret) mekanizmasıyla verilir.
+- `PUBLIC_BASE_URL` ve `ATLASSIAN_OAUTH_REDIRECT_URI` dışarıdan erişilen adres
+  olmalıdır (ör. `https://jira-mcp.kurum.local`), `localhost` ya da `0.0.0.0` değil.
+  Jira'daki Application Link'in yönlendirme adresi de buna göre güncellenir.
+
 ## Araçları elle denemek (MCP Inspector)
 
 OAuth olmadan, kendi Jira kişisel token'ınızla yerel bir kopya açıp araç listesini
@@ -91,8 +117,84 @@ Sunucunun çalıştığı makinede, şifreli dosyalar olarak:
 - Linux: `~/.local/share/fastmcp/oauth-proxy/<kod>/`
 
 Şifreleme anahtarı Jira client secret'tan türetilir; secret değişirse herkes bir kez
-yeniden bağlanır. Birden çok kopya çalışacaksa ortak bir Redis deposu gerekir
-(`ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE`).
+yeniden bağlanır. Birden çok kopya çalışacaksa ortak depo gerekir: PostgreSQL (aşağıda).
+
+## PostgreSQL deposu
+
+Token'lar dosya yerine PostgreSQL'de tutulabilir. Üç tablo vardır, tablolar Alembic ile
+yönetilir (migration'lar paketin içinde: `src/mcp_atlassian/db/migrations/`):
+
+| Tablo | İçerik |
+| --- | --- |
+| `mcp_oauth_kv` | FastMCP OAuth durumu (istemci kayıtları, Jira token'ları, refresh token'lar). Değerler **şifreli**. FastMCP koleksiyonları ayrı tablo değil, `collection` kolonudur. |
+| `mcp_grant_index` | Hangi izin kime / hangi uygulamaya ait. **Token içermez.** `grant_id` = `mcp_oauth_kv`'deki `mcp-upstream-tokens` satırının `key`'i (mantıksal eşleme, FK değil). |
+| `mcp_tool_call_audit` | Araç çağrısının sonucu ve süresi; argüman değeri yazılmaz. Saklama 180 gün. |
+
+1. Tabloları açın (veritabanı boş olabilir; başka uygulamaların tablolarına dokunulmaz,
+   sürüm tablosu `mcp_alembic_version`):
+
+   ```bat
+   set MCP_STORAGE_PG_URL=postgresql://kullanici@sunucu:5432/veritabani
+   set PGPASSWORD=…
+   .venv\Scripts\python -m mcp_atlassian.db upgrade
+   ```
+
+   SQL'i bağlanmadan görmek (DBA'ya vermek için): `python -m mcp_atlassian.db sql`.
+   Docker: `docker run --rm -e MCP_STORAGE_PG_URL=… --entrypoint python <imaj> -m mcp_atlassian.db upgrade`.
+
+2. `mcp.env`'e ekleyin:
+
+   ```ini
+   ATLASSIAN_OAUTH_CLIENT_STORAGE_MODE=factory
+   ATLASSIAN_OAUTH_CLIENT_STORAGE_FACTORY=mcp_atlassian.servers.pg_storage:build_storage
+   MCP_STORAGE_PG_URL=postgresql://kullanici@sunucu:5432/veritabani
+   PGPASSWORD=…
+   ```
+
+   Parola URL'ye yazılmaz, `PGPASSWORD` değişkeninde durur (asyncpg okur). Böylece
+   bağlantı adresi loglara ya da ekran görüntüsüne düşse bile parola sızmaz.
+
+   Ayrı bir şifreleme anahtarı **yoktur**: anahtar `ATLASSIAN_OAUTH_CLIENT_SECRET`'tan,
+   FastMCP'nin dosya deposuyla birebir aynı yolla türetilir. Secret değişirse kayıtlar
+   okunamaz, "yok" sayılır ve herkes bir kez yeniden bağlanır (hata vermez). Birden çok
+   MCP kopyası aynı tabloyu paylaşabilir; hepsinde aynı secret olmalı. Veritabanını ele
+   geçiren secret olmadan token okuyamaz.
+
+3. Hız: depoya her erişim veritabanına bir gidiş-dönüştür (bağlanma ~14, her MCP isteği
+   ~4). Okumalar bu yüzden 60 sn bellekte tutulur, yazmalar her zaman veritabanına gider.
+   Bağlantı havuzu 1 bağlantıyla başlar, boşta kalanları 60 sn'de kapatır (güvenlik
+   duvarının sessizce kestiği bağlantıya takılmamak için).
+
+   ```ini
+   MCP_STORAGE_CACHE_SECONDS=60   # 0 = önbellek kapalı
+   MCP_STORAGE_PG_POOL_MAX=5
+   ```
+
+   Yavaşlık varsa MCP sunucusunda ölçün:
+   `python -m mcp_atlassian.db ping` → bağlanma süresi ve sorgu gidiş-dönüşü. Gidiş-dönüş
+   birkaç ms'den fazlaysa veritabanı MCP'ye ağ olarak uzaktır.
+
+   Birden çok MCP kopyası çalışıyorsa: bir kopyadaki değişiklik ötekinin önbelleğine en
+   geç `MCP_STORAGE_CACHE_SECONDS` sonra yansır. Bağlantı iptali bundan etkilenmez
+   (iptal kaydı önbelleğe alınmaz).
+
+4. Temizlik (cron / pg_cron):
+
+   ```sql
+   -- saatte bir: süresi dolan OAuth kayıtları
+   DELETE FROM mcp_oauth_kv WHERE expires_at IS NOT NULL AND expires_at < now();
+   -- günde bir: denetim kayıtları 180 günden eski
+   DELETE FROM mcp_tool_call_audit WHERE called_at < now() - interval '180 days';
+   ```
+
+Geçişte dosyadaki eski kayıtlar taşınmaz; kullanıcılar bir kez yeniden bağlanır.
+
+Yeni migration (geliştirme): şemayı `src/mcp_atlassian/db/schema.py`'de değiştirin,
+sonra `uv run alembic revision --autogenerate -m "aciklama"` ve dosyayı elle gözden
+geçirin. `uv run alembic check` şema ile migration'ların uyumunu denetler. Gerçek
+veritabanına karşı testler:
+`MCP_TEST_PG_URL=postgresql://kullanici@sunucu/test_db uv run pytest tests/integration/test_mcp_pg_storage.py --integration`
+(o veritabanındaki `mcp_` tabloları silinip yeniden açılır).
 
 ## Güvenlik ayarları
 
